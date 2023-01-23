@@ -8,7 +8,7 @@ numCycles <- 45
 n <- 100
 
 # sampling occasions
-M <- 1 + rpois(n, lambda = 3)
+M <- 1 + rep(2, n)#rpois(n, lambda = 3)
 idx_site <- rep(1:n, M)
 
 # technical replicates
@@ -25,11 +25,10 @@ P <- idx_site_K
   tau <- 1
   sigma <- 2
   sigma_y <- 1
-  beta_b0 <- 0
-  beta_w0 <- -1
+  beta_b0 <- 2
+  beta_w0 <- 0
   theta0 <- .02
   p0 <- .05
-  nu_0 <- 20
   nu <- -1
   sigma_nu <- 1
   
@@ -53,49 +52,42 @@ P <- idx_site_K
 }
 
 # covariates
-ncov_z <- 2
-X_b <- matrix(rnorm(ncov_z * n), n, ncov_z)
+ncov_b <- 2
+X_b <- matrix(rnorm(ncov_b * n), n, ncov_b)
 ncov_w <- 2
 X_w <- matrix(rnorm(ncov_w * sum(M)), sum(M), ncov_w)
+ncov_wt <- 1
+X_wt <- matrix(rnorm(ncov_wt * sum(M)), sum(M), ncov_wt)
 
 # covariates coefficients
-beta_b <- sample(c(-1,1), size = ncov_z, replace = T)# rnorm(ncov_z)
-beta_w <- rnorm(ncov_w)
+beta_b <- sample(c(-1,1), size = ncov_b, replace = T)# rnorm(ncov_b)
+beta_w <- sample(c(-1,1), size = ncov_w, replace = T)# rnorm(ncov_b)rnorm(ncov_w)
+beta_wt <- sample(c(-1,1), size = ncov_wt, replace = T)# rnorm(ncov_b)rnorm(ncov_w)
 
 # amount of biomass at the site
 l <- beta_b0 + X_b %*% beta_b + rnorm(n, sd = tau)
-# b <- ifelse(logb > 1, logb, 0)
-# z <- as.numeric(l > 0)
-# b <- z * (exp(l) - 1)
-
-# z_samples <- z[idx_site]
-l_samples <- l[idx_site]
-# b_samples <- l[idx_site]
 
 # STAGE 1 -----
-# w <- rep(NA, sum(M))
-v <- rep(NA, sum(M)) # collected biomass
-# delta <- rep(NA, sum(M))
-v_tilde <- rep(NA, sum(M)) # biomass from contamination
-# gamma <- rep(NA, sum(M))
+
+v1_tilde <- rep(NA, sum(M)) # collected log-biomass
+v2_tilde <- rep(NA, sum(M)) # log-biomass from contamination
 
 # true positives 
-v <- l_samples + beta_w0 + X_w %*% beta_w + rnorm(sum(M), sd = sigma)
-w_hat <- (v > 0) * (exp(v) - 1)
-# v[z == 1 & v < 0] <- 0
+l_samples <- l[idx_site]
+v1 <- l_samples + beta_w0 + X_w %*% beta_w + rnorm(sum(M), sd = sigma)
+w1 <- convertPositive(v1)
 
 # assign to 0 sites with log-collected biomass less than 1
-v_tilde[v > 0] <- 0
-v_tilde[v <= 0] <- rnorm(sum(v <= 0), nu, sd = sigma_nu)
-w_tilde <- (v_tilde > 0) * (exp(v_tilde) - 1)
-# v[z==0] <- rnorm(sum(z==0), nu, sd = sigma_nu)
-# delta[z==0] <- v[z==0] > 0
-# v[z == 0 & v < 0] <- 0
-w <- w_hat + w_tilde
+v2 <- nu + X_wt %*% beta_wt + rnorm(sum(M), 0, sd = sigma_nu)
+w2 <- convertPositive(v2)
 
+w <- w1 + w2
 w_pcr <- w[idx_sample_K]
-# w <- ifelse(v[idx_sample_K] > 0, exp(v[idx_sample_K] - 1), 0)
-# w <- ifelse(delta == 1, w_tilde, 0)
+
+# v <- ifelse(!is.na(v1_tilde), v1, v2)
+
+# v_pcr <- v[idx_sample_K]
+# v_pcr <- ifelse(!is.na(v_pcr), v_pcr, -Inf)
 
 # STAGE 2 --------
 
@@ -108,11 +100,11 @@ delta_star <- sapply(p_imk_star, function(p){
   rbinom(1, 1, p)
 })
 
-delta_star <- sapply(delta_star, function(x){
+gamma_star <- sapply(delta_star, function(x){
   if(x == 0){
-    2 * rbinom(1, 1, p0)
+    rbinom(1, 1, p0)
   } else {
-    x
+    0
   }
 })
 
@@ -120,7 +112,7 @@ data_standard$Ct <- ifelse(delta_star == 1,
                            alpha1[data_standard$P] + alpha2[data_standard$P] * 
                              log(data_standard$Qty) + 
                              rnorm(nrow(data_standard), sd = sigma_y), 
-                           ifelse(delta_star == 1, 
+                           ifelse(gamma_star == 1, 
                                   rnorm(length(data_standard$P), lambda, sigma_lambda), 
                                   0))
 
@@ -134,25 +126,21 @@ delta <- sapply(p_imk, function(p){
   rbinom(1, 1, p)
 })
 
-delta <- sapply(delta, function(x){
+gamma <- sapply(delta, function(x){
   if(x == 0){
-    2 * rbinom(1, 1, p0)
+    rbinom(1, 1, p0)
   } else {
-    x
+    0
   }
 })
 
 Ct <- ifelse(delta == 1, 
-             alpha1[data_real$Plate] + alpha2[data_real$Plate] * log(w_pcr) +
+             alpha1[data_real$Plate] + 
+               alpha2[data_real$Plate] * log(w_pcr) +
                rnorm(nrow(data_real), sd = sigma_y), 
-             ifelse(delta == 2, 
+             ifelse(gamma == 1, 
                     rnorm(length(P), lambda, sigma_lambda), 
                     0))
-
-# false positives
-# idx_0 <- which(delta[idx_sample_K] == 0 & gamma[idx_sample_K] == 0)
-# zeta <- rbinom(length(idx_0), 1, p0)
-# Ct[idx_0] <- zeta * rnorm(length(idx_0), nu_0, sd = sigma_y) 
 
 data_real$Ct <- Ct
 
@@ -160,25 +148,33 @@ data_real$Ct <- Ct
 
 {
   l_true <- l
-  v_true <- v
+  v1_true <- v1
   
   tau_true <- tau
-  vtilde_true <- v_tilde
+  v2_true <- v2
   
   alpha1_true <- alpha1
   alpha2_true <- alpha2
   
-  beta_0b_true <- beta_b0
+  beta_b0_true <- beta_b0
   beta_b_true <- beta_b
   
   beta_w0_true <- beta_w0
   beta_w_true <- beta_w
   
+  nu_true <- nu
+  beta_wt_true <- beta_wt
+  sigma_nu_true <- sigma_nu
+  
   delta_true <- delta
   delta_star_true <- delta_star
+  gamma_true <- gamma
+  gamma_star_true <- gamma_star
   
   phi_0_true <- phi_0
   phi_1_true <- phi_1
+  
+  p0_true <- p0
   
   sigma_y_true <- rep(sigma_y, n_P)
   sigma_true <- sigma

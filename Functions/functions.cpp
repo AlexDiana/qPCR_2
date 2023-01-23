@@ -80,6 +80,7 @@ double dmt_cpp(arma::vec x, double nu, arma::vec mu, arma::mat Sigma, bool retur
   }
 }
 
+
 // GAUSSIAN PROCESS FUNCTIONS
 
 double k_cpp(double x1, double x2, double a, double l){
@@ -269,6 +270,46 @@ double rpg(int n, double z){
   return(x);
 }
 
+
+double jj_m1(double b, double z)  {
+  z = fabs(z);
+  double m1 = 0.0;
+  if (z > 1e-12)
+    m1 = b * tanh(z) / z;
+  else
+    m1 = b * (1 - (1.0/3) * pow(z,2) + (2.0/15) * pow(z,4) - (17.0/315) * pow(z,6));
+  return m1;
+}
+
+double jj_m2(double b, double z) {
+  z = fabs(z);
+  double m2 = 0.0;
+  if (z > 1e-12)
+    m2 = (b+1) * b * pow(tanh(z)/z,2) + b * ((tanh(z)-z)/pow(z,3));
+  else
+    m2 = (b+1) * b * pow(1 - (1.0/3) * pow(z,2) + (2.0/15) * pow(z,4) - (17.0/315) * pow(z,6), 2) +
+      b * ((-1.0/3) + (2.0/15) * pow(z,2) - (17.0/315) * pow(z,4));
+  return m2;
+}
+
+double pg_m1(double b, double z) {
+  return jj_m1(b, 0.5 * z) * 0.25;
+}
+
+double pg_m2(double b, double z) {
+  return jj_m2(b, 0.5 * z) * 0.0625;
+}
+
+// [[Rcpp::export]]
+double rpg_fast(double b, double z){
+  
+  double m = pg_m1(b, z);
+  double v = pg_m2(b,z) - m*m;
+  double x = x = R::rnorm(m, sqrt(v));
+  
+  return(x);
+}
+
 // LAMBERT
 
 const double EPS = 2.2204460492503131e-16;
@@ -381,6 +422,43 @@ arma::mat diagMatrixProd(arma::mat& X, arma::vec& D){
 }
 
 // [[Rcpp::export]]
+arma::vec mvrnorm_inv(arma::vec mu, arma::mat Q){
+  
+  arma::mat L = arma::trans(chol(Q));
+  
+  arma::mat Y = arma::randn(1, Q.n_cols);
+  
+  arma::vec v = solve(arma::trans(L), arma::trans(Y));
+  
+  return mu + v;
+}
+
+
+// [[Rcpp::export]]
+double dmvnorm_cpp_inv(arma::vec data, arma::vec m, arma::mat invSigma, bool returnLog){
+  
+  int xdim = data.size();
+  
+  arma::mat L = arma::trans(arma::chol(invSigma));
+  
+  double rootisum = arma::sum(log(L.diag()));
+  
+  // arma::mat rooti = arma::trans(arma::inv(trimatu(arma::chol(Sigma))));
+  // Rcout << rooti << std::endl;
+  // double rootisum = arma::sum(log(rooti.diag()));
+  
+  double constants = -(xdim/2) * log2pi;
+  double z = arma::as_scalar(arma::trans(data - m) * invSigma * (data - m));  
+  
+  if(returnLog){
+    return (constants - 0.5 * z + rootisum);
+  } else {
+    return exp(constants - 0.5 * z + rootisum);     
+  }
+  
+}
+
+// [[Rcpp::export]]
 arma::vec sample_beta_cpp(arma::mat& X, arma::mat& B, arma::vec& b, 
                           arma::vec& Omega, arma::vec& k){
   
@@ -432,7 +510,9 @@ arma::vec sample_betaPG(arma::vec beta, arma::mat X, arma::vec b,
 // [[Rcpp::export]]
 double dmvnorm_cpp(arma::vec data, arma::vec m, arma::mat Sigma, bool returnLog){
   int xdim = data.size();
+  
   arma::mat rooti = arma::trans(arma::inv(trimatu(arma::chol(Sigma))));
+  
   double rootisum = arma::sum(log(rooti.diag()));
   
   double constants = -(xdim/2) * log2pi;
@@ -513,6 +593,7 @@ double tnorm_std(double mu_bar){
   
 }
 
+// [[Rcpp::export]]
 double tnorm(double mu, 
              double sigma, 
              double mu_bar){
@@ -956,7 +1037,8 @@ List updateDeltaGammaCpp(arma::vec Ct,
         
         double log_gamma1 = logprior_delta0 +  logprior_gamma_1 + loglik_gamma1;
         
-        double p_delta1 = exp(log_delta1 - log_gamma1) / (1 + exp(log_delta1 - log_gamma1));
+        double p_delta1 = exp(log_delta1) / (exp(log_gamma1) + exp(log_delta1));
+        // double p_delta1 = exp(log_delta1 - log_gamma1) / (1 + exp(log_delta1 - log_gamma1));
         
         delta[i] = R::rbinom(1, p_delta1);
         gamma[i] = 1 - delta[i];
@@ -1005,7 +1087,8 @@ List updateDeltaGammaCpp(arma::vec Ct,
         
         double log_gamma1 = logprior_delta0 +  logprior_gamma_1 + loglik_gamma1;
         
-        double p_delta1 = exp(log_delta1 - log_gamma1) / (1 + exp(log_delta1 - log_gamma1));
+        double p_delta1 = exp(log_delta1) / (exp(log_gamma1) + exp(log_delta1));
+        // double p_delta1 = exp(log_delta1 - log_gamma1) / (1 + exp(log_delta1 - log_gamma1));
         
         delta_star[i] = R::rbinom(1, p_delta1);
         gamma_star[i] = 1 - delta_star[i];
@@ -1059,10 +1142,15 @@ double logf_v_cpp(double v_i,
         double prob = logistic(phi_0 + phi_1 * log(w_i));
         
         loglik += log(
-          R::dbinom(1, 1, prob, 0) *
-                     R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_i), sigma_y[i], 0) + 
-                             R::dbinom(0, 1, prob, 0) *
-                                      p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
+         R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_i), sigma_y[i], 0) + 
+           exp(-(phi_0 + phi_1 * log(w_i))) *
+                                      p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0)
+          ) - log(1 + exp(-(phi_0 + phi_1 * log(w_i))));
+        // loglik += log(
+        //   R::dbinom(1, 1, prob, 0) *
+        //              R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_i), sigma_y[i], 0) + 
+        //                      R::dbinom(0, 1, prob, 0) *
+        //                               p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
         
       } else {
         
@@ -1082,9 +1170,14 @@ double logf_v_cpp(double v_i,
         
         double prob = logistic(phi_0 + phi_1 * log(w_tilde_i));
         
+        // loglik += log(
+        //   R::dbinom(1, 1, prob, 0) * R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_tilde_i), sigma_y[i], 0) + 
+        //     R::dbinom(0, 1, prob, 0) * p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
         loglik += log(
-          R::dbinom(1, 1, prob, 0) * R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_tilde_i), sigma_y[i], 0) + 
-            R::dbinom(0, 1, prob, 0) * p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
+          R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_tilde_i), sigma_y[i], 0) + 
+            exp(-(phi_0 + phi_1 * log(w_tilde_i))) *
+            p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0)
+        ) - log(1 + exp(-(phi_0 + phi_1 * log(w_tilde_i))));
         
       } else {
         
@@ -1102,20 +1195,367 @@ double logf_v_cpp(double v_i,
     
 }
 
+
 // [[Rcpp::export]]
-arma::vec updateV_cpp(arma::vec v, 
+double logf_vtilde_cpp(double x, 
+                        arma::vec Ct_i, 
+                        double mean_vtilde, 
+                        double sigma_nu, 
+                        arma::vec alpha1_i, 
+                        arma::vec alpha2_i, 
+                        arma::vec sigma_y, 
+                        double p0, 
+                        double phi_0, 
+                        double phi_1,
+                        double lambda, 
+                        double sigma_lambda){
+  
+  double logprior = R::dnorm(x, mean_vtilde, sigma_nu, 1);
+  
+  double loglik = 0;
+  if(x > 0){
+    
+    double w_tilde_i = exp(x) - 1;
+    
+    for(int i = 0; i < Ct_i.size(); i++){
+      
+      double prob = logistic(phi_0 + phi_1 * log(w_tilde_i));
+      
+      if(Ct_i[i] > 0){
+        
+        loglik += log(
+          R::dbinom(1, 1, prob, 0) *
+            R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_tilde_i), sigma_y[i], 0) + 
+            R::dbinom(0, 1, prob, 0) *
+            p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
+        
+      } else {
+        
+        loglik += R::dbinom(0, 1, prob, 1) + log(1 - p0);
+        
+      }
+      
+    }
+    
+  } else {
+    
+    for(int i = 0; i < Ct_i.size(); i++){
+      
+      if(Ct_i[i] > 0){
+        
+        loglik += log(p0) + R::dnorm(Ct_i[i], lambda, sigma_lambda, 1);
+        
+      } else {
+        
+        loglik += log(1 - p0);
+        
+      }
+      
+    }
+    
+  }
+  
+  return logprior + loglik;
+  
+}
+
+double loglik_vv_tilde_ratio(double v_i, 
+                             double v_tilde_i, 
+                             double v_i_star, 
+                             double v_tilde_i_star,
+                             arma::vec Ct_i, 
+                             arma::vec alpha1_i, 
+                             arma::vec alpha2_i, 
+                             arma::vec sigma_y, 
+                             double p0, 
+                             double phi_0, 
+                             double phi_1,
+                             double lambda, 
+                             double sigma_lambda){
+  
+  double w_i;
+  if(v_i > 0){
+    w_i = exp(v_i) - 1;
+  } else {
+    w_i = exp(v_tilde_i) - 1;
+  }
+  
+  double w_star_i;
+  if(v_i_star > 0){
+    w_star_i = exp(v_i_star) - 1;
+  } else {
+    w_star_i = exp(v_tilde_i_star) - 1;
+  }
+  
+  double loglik_ratio = 0;
+  
+  for(int i = 0; i < Ct_i.size(); i++){
+    
+    if(Ct_i[i] > 0){
+      
+      if(w_i > 0 & w_star_i > 0){
+        
+        loglik_ratio += log(
+          (R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_star_i),
+                 sigma_y[i], 0) +
+                   exp(-(phi_0 + phi_1 * log(w_star_i))) *
+                   p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0)) /
+                     (R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_i),
+                            sigma_y[i], 0) +
+                              exp(-(phi_0 + phi_1 * log(w_i))) *
+                              p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0))
+        ) -
+          (log(1 + exp(-(phi_0 + phi_1 * log(w_star_i)))) -
+          log(1 + exp(-(phi_0 + phi_1 * log(w_i)))) );
+        
+      } else if(w_star_i > 0 & w_i < 0){
+        
+        loglik_ratio += log(
+          (R::dbinom(1, 1, 
+            logistic(phi_0 + phi_1 * log(w_star_i)), 0) * 
+              R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_star_i), 
+                  sigma_y[i], 0) + 
+                    R::dbinom(0, 1, 
+                    logistic(phi_0 + phi_1 * log(w_star_i)), 0) *
+                    p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0))) -
+                    (log(p0) + R::dnorm(Ct_i[i], lambda, sigma_lambda, 0));
+        
+      } else if(w_i > 0 & w_star_i < 0){
+        
+        loglik_ratio += (log(p0) + R::dnorm(Ct_i[i], lambda, sigma_lambda, 0)) - 
+          log(
+            (R::dbinom(1, 1, 
+              logistic(phi_0 + phi_1 * log(w_i)), 0) * 
+                R::dnorm(Ct_i[i], alpha1_i[i] + alpha2_i[i] * log(w_i), 
+                    sigma_y[i], 0) + 
+                      R::dbinom(0, 1, 
+                      logistic(phi_0 + phi_1 * log(w_i)), 0) *
+                      p0 * R::dnorm(Ct_i[i], lambda, sigma_lambda, 0)));
+        
+        
+      } else {
+        
+        loglik_ratio += 0;
+        
+      }
+      
+    } else {
+      
+      if(w_i > 0 & w_star_i > 0){
+        
+        double linPred_current = phi_0 + phi_1 * log(w_i);
+        double linPred_star = phi_0 + phi_1 * log(w_star_i);
+
+        loglik_ratio += - (linPred_star) - log(1 + exp(-linPred_star)) - 
+          (- linPred_current - log(1 + exp(-linPred_current)));
+        
+      } else if(w_star_i > 0 & w_i < 0){ 
+        
+        loglik_ratio += R::dbinom(1, 1,  
+          logistic(phi_0 + phi_1 * log(w_star_i)), 0);
+        
+        
+      } else if(w_i > 0 & w_star_i < 0){
+        
+        loglik_ratio += - R::dbinom(1, 1, 
+          logistic(phi_0 + phi_1 * log(w_i)), 0);
+        
+        
+      } else {
+        
+        loglik_ratio +=  0;
+        
+      }
+      
+    }
+    
+  }
+
+  return(loglik_ratio);
+  
+}
+
+double logf_v_ratio(double v_i, 
+                    double v_i_star,
+                    double v_tilde_i, 
+                    double v_tilde_i_star,
+                    arma::vec Ct_i, 
+                    double v_mean, 
+                    double sigma, 
+                    arma::vec alpha1_i, 
+                    arma::vec alpha2_i,  
+                    arma::vec sigma_y, 
+                    double p0, 
+                    double phi_0, 
+                    double phi_1,
+                    double lambda, 
+                    double sigma_lambda){
+  
+  double logprior_ratio = 
+    R::dnorm(v_i_star, v_mean, sigma, 1) -
+    R::dnorm(v_i, v_mean, sigma, 1);
+  
+  double w_i;
+  if(v_i > 0){
+    w_i = exp(v_i) - 1;
+  } else {
+    w_i = exp(v_tilde_i) - 1;
+  }
+  
+  double w_star_i;
+  if(v_i_star > 0){
+    w_star_i = exp(v_i_star) - 1;
+  } else {
+    w_star_i = exp(v_tilde_i_star) - 1;
+  }
+  
+  double loglik_ratio = loglik_vv_tilde_ratio(v_i, v_tilde_i, 
+                                              v_i_star, v_tilde_i_star,
+                                              Ct_i, 
+                                              alpha1_i, alpha2_i, 
+                                              sigma_y, p0, phi_0, phi_1,
+                                              lambda, sigma_lambda);
+  
+  return(logprior_ratio + loglik_ratio);
+      
+}
+
+// [[Rcpp::export]]
+double findmin_cpp(arma::vec Ct_i, 
+                   double mean_vtilde, 
+                   double sigma_nu, 
+                   arma::vec alpha1_i, 
+                   arma::vec alpha2_i, 
+                   arma::vec sigma_y, 
+                   double p0, 
+                   double phi_0, 
+                   double phi_1,
+                   double lambda, 
+                   double sigma_lambda){
+  
+  int numPoints = 200;
+  arma::vec grid_points = arma::zeros(numPoints);
+  double a = -20;
+  double b = 20;
+  
+  
+  for(int i = 0; i < numPoints; i++){
+    
+    grid_points[i] = a + i * (b - a) / numPoints;
+    
+  }
+  
+  double max = -exp(50);
+  double max_idx = 0;
+  for(int i = 0; i < numPoints; i++){
+    
+    double loglik = logf_vtilde_cpp(grid_points[i],
+                                    Ct_i, 
+                                    mean_vtilde, 
+                                    sigma_nu, 
+                                    alpha1_i, 
+                                    alpha2_i, 
+                                    sigma_y, 
+                                    p0, 
+                                    phi_0, 
+                                    phi_1,
+                                    lambda, 
+                                    sigma_lambda);
+    
+    if(loglik > max){
+      
+      max = loglik;
+      max_idx = i;
+      
+    }
+    
+  }
+
+  return grid_points[max_idx];
+}
+
+
+// [[Rcpp::export]]
+double findMustar_vtilde_cpp(arma::vec Ct_i,
+                             double vtilde_mean,
+                             double sigma_vtilde,
+                             arma::vec alpha1_i,
+                             arma::vec alpha2_i,
+                             arma::vec sigma_y_i,
+                             double p0,
+                             double phi_0,
+                             double phi_1,
+                             double lambda,
+                             double sigma_lambda){
+
+  bool anyPos = false;
+  bool anyNeg = false;
+  for(int i = 0; i < Ct_i.size(); i++){
+
+    if(Ct_i[i] > 0){
+      anyPos = true;
+    } else {
+      anyNeg = true;
+    }
+
+  }
+
+  double v_tilde_star = 0;
+
+  if(anyPos & !anyNeg){
+
+    double sum = 0;
+    
+    for(int k = 0; k < Ct_i.size(); k++){
+      
+      sum += (Ct_i[k] - alpha1_i[k]) / alpha2_i[k];
+      
+    }
+    
+    v_tilde_star = sum / Ct_i.size();
+
+  } else if(anyPos & anyNeg){
+
+    v_tilde_star = findmin_cpp(Ct_i, 
+                               vtilde_mean, 
+                               sigma_vtilde, 
+                               alpha1_i, 
+                               alpha2_i, 
+                               sigma_y_i, 
+                               p0, 
+                               phi_0, 
+                               phi_1,
+                               lambda, 
+                               sigma_lambda);
+
+  } else {
+    
+    v_tilde_star = vtilde_mean;
+
+  }
+
+  return v_tilde_star;
+}
+
+// [[Rcpp::export]]
+List updateV_cpp(arma::vec v, 
+                      arma::vec v_tilde, 
                       arma::vec Ct, 
                       arma::vec l, 
                       arma::vec M,
                       double beta_w0, 
                       arma::mat X_w, 
                       arma::vec beta_w,
+                      double sigma,
+                      double nu,
+                      arma::mat X_wt, 
+                      arma::vec beta_wt,
+                      double sigma_vtilde,
                       arma::vec alpha1, 
                       arma::vec alpha2, 
                       arma::vec P, 
                       arma::vec w_tilde,
                       arma::vec numSampleV,
-                      double sigma,
                       arma::vec sigma_y,
                       double p0,
                       double phi_0, 
@@ -1125,6 +1565,8 @@ arma::vec updateV_cpp(arma::vec v,
                       double sigma_lambda){
   
   arma::vec Xwbetaw = beta_w0 + X_w * beta_w;
+  arma::vec Xwtbetawt = nu + X_wt * beta_wt;
+  
   int n = l.size();
     
   int index_m = 0;
@@ -1144,33 +1586,109 @@ arma::vec updateV_cpp(arma::vec v,
       arma::vec Ct_i = arma::zeros(numSampleCurrent);
       arma::vec alpha1_i = arma::zeros(numSampleCurrent);
       arma::vec alpha2_i = arma::zeros(numSampleCurrent);
+      arma::vec sigmay_i = arma::zeros(numSampleCurrent);
       for(int l3 = 0; l3 < numSampleCurrent; l3++){
         Ct_i[l3] = Ct[index_k + l3];
         alpha1_i[l3] = alpha1[P[index_k + l3] - 1];
         alpha2_i[l3] = alpha2[P[index_k + l3] - 1];
+        sigmay_i[l3] = sigma_y[P[index_k + l3] - 1];
       }
+      
+      double vtilde_mean = Xwtbetawt[idx_current];
       
       // Ct_i <- Ct[idx_sample_K == idx_current]
       // alpha1_i <- alpha1[P[idx_sample_K == idx_current]]
       // alpha2_i <- alpha2[P[idx_sample_K == idx_current]]
       
-      double w_tilde_i = w_tilde[idx_current];
+      // double w_tilde_i = w_tilde[idx_current];
       
       double v_star = R::rnorm(v_current, sigmas_v[idx_current]);
+      
+      double logproposal_v;
+      double logprior_v;
+      double v_tilde_current;
+      double v_tilde_star;
+      
+      if(v_current > 0 & v_star > 0){
         
-      double logposterior_current = logf_v_cpp(v_current, Ct_i, v_mean, sigma, 
-                                       alpha1_i, alpha2_i, w_tilde_i, 
-                                       sigma_y, p0, phi_0, phi_1,
-                                       lambda, sigma_lambda);
+        logproposal_v = 0;
+        logprior_v = 0;
+        v_tilde_current = 0;
+        v_tilde_star = NA_REAL;
         
-      double logposterior_star = logf_v_cpp(v_star, Ct_i, v_mean, sigma, 
-                                    alpha1_i, alpha2_i, w_tilde_i, 
-                                    sigma_y, p0, phi_0, phi_1,
-                                    lambda, sigma_lambda);
+      } else if(v_current > 0 & v_star < 0){
+        
+        double v_tilde_star = findMustar_vtilde_cpp(Ct_i, 
+                                                vtilde_mean, sigma_vtilde,
+                                                alpha1_i, alpha2_i,
+                                                sigmay_i, p0, phi_0, phi_1,
+                                                lambda, sigma_lambda);
+        
+        v_tilde_current = R::rnorm(v_tilde_star, 1);
+        
+        logproposal_v = - R::dnorm(v_tilde_current, v_tilde_star, 1, 1);
+        
+        logprior_v = R::dnorm(v_tilde_current, vtilde_mean, sigma_vtilde, 1);
+        
+      } else if(v_current < 0 & v_star > 0){
+        
+        v_tilde_current = v_tilde[idx_current];
+        
+        double v_tilde_star = findMustar_vtilde_cpp(Ct_i, 
+                                                vtilde_mean, sigma_vtilde,
+                                                alpha1_i, alpha2_i,  
+                                                sigmay_i, p0, phi_0, phi_1,
+                                                lambda, sigma_lambda);
+        
+        logproposal_v = R::dnorm(v_tilde_current, v_tilde_star, 1, 1);
+        
+        logprior_v = - R::dnorm(v_tilde_current, vtilde_mean, sigma_vtilde, 1);
+        
+      } else {
+        
+        logproposal_v = 0;
+        v_tilde_current = v_tilde[idx_current];
+        v_tilde_star = v_tilde[idx_current];
+        
+        logprior_v = 0;
+        
+      }
+      
+      // double w_tilde_i = (exp(v_tilde_current) - 1) * (v_tilde_current > 0);
+      //   
+      // double logposterior_current = logf_v_cpp(v_current, Ct_i, v_mean, sigma, 
+      //                                  alpha1_i, alpha2_i, w_tilde_i, 
+      //                                  sigmay_i, p0, phi_0, phi_1,
+      //                                  lambda, sigma_lambda);
+      //   
+      // double logposterior_star = logf_v_cpp(v_star, Ct_i, v_mean, sigma, 
+      //                               alpha1_i, alpha2_i, w_tilde_i, 
+      //                               sigmay_i, p0, phi_0, phi_1,
+      //                               lambda, sigma_lambda);
+      
+      double logposterior_ratio = logf_v_ratio(v_current, v_star,
+                                               v_tilde_current, v_tilde_star,
+                                               Ct_i, v_mean, sigma, 
+                                               alpha1_i, alpha2_i,  
+                                               sigma_y, p0, phi_0, phi_1,
+                                               lambda, sigma_lambda);
+      
+      double logratio = logposterior_ratio  +
+        logprior_v + logproposal_v;
 
-      if(R::runif(0, 1) < exp(logposterior_star - logposterior_current)){
+      if(R::runif(0, 1) < exp(logratio)){
         
         v[idx_current] = v_star;
+        
+      }
+      
+      if(v[idx_current] < 0){
+        
+        v_tilde[idx_current] = v_tilde_current;
+        
+      } else {
+        
+        v_tilde[idx_current] = NA_REAL;
         
       }
       
@@ -1182,7 +1700,8 @@ arma::vec updateV_cpp(arma::vec v,
     
   }
   
-  return v;
+  return List::create(_["v"] = v,
+                      _["v_tilde"] = v_tilde);
     
 }
 
@@ -1193,7 +1712,7 @@ arma::vec updateV_cpp(arma::vec v,
 // [[Rcpp::export]]
 double logf_v_tilde_cpp(double v_tilde_i, 
                   arma::vec Ct_i, 
-                  double nu, 
+                  double mean_vtilde, 
                   double sigma_nu, 
                   arma::vec alpha1_i, 
                   arma::vec alpha2_i, 
@@ -1204,7 +1723,7 @@ double logf_v_tilde_cpp(double v_tilde_i,
                   double lambda, 
                   double sigma_lambda){
   
-  double logprior = R::dnorm(v_tilde_i, nu, sigma_nu, 1);
+  double logprior = R::dnorm(v_tilde_i, mean_vtilde, sigma_nu, 1);
   
   double loglik = 0;
   if(v_tilde_i > 0){
@@ -1259,18 +1778,16 @@ double logf_v_tilde_cpp(double v_tilde_i,
 arma::vec updateVtilde_cpp(arma::vec v_tilde,
                            arma::vec v,
                            arma::vec Ct,
-                           arma::vec l,
+                           int n,
                            arma::vec M,
-                           double beta_w0,
-                           arma::mat X_w,
-                           arma::vec beta_w,
                            arma::vec alpha1,
                            arma::vec alpha2,
                            arma::vec P,
                            double nu,
+                           arma::mat X_wt,
+                           arma::vec beta_wt,
                            double sigma_nu,
                            arma::vec numSampleV,
-                           double sigma,
                            arma::vec sigma_y,
                            double p0,
                            double phi_0,
@@ -1279,49 +1796,48 @@ arma::vec updateVtilde_cpp(arma::vec v_tilde,
                            double lambda,
                            double sigma_lambda){
 
-  int n = l.size();
+  arma::vec Xwtbetawt = nu + X_wt * beta_wt;
 
   int index_m = 0;
   int index_k = 0;
   for(int i = 0; i < n; i++){
 
-    double l_i = l[i];
-
     for (int m = 0; m < M[i]; m++) {
 
+      // Rcout << m << std::endl;
       int idx_current = m + index_m;
       int numSampleCurrent = numSampleV[idx_current];
       
-      if(v[idx_current] > 0){
+      if(v[idx_current] < 0){
         
         double v_tilde_current = v_tilde[idx_current];
         
         arma::vec Ct_i = arma::zeros(numSampleCurrent);
         arma::vec alpha1_i = arma::zeros(numSampleCurrent);
         arma::vec alpha2_i = arma::zeros(numSampleCurrent);
+        arma::vec sigmay_i = arma::zeros(numSampleCurrent);
         for(int l3 = 0; l3 < numSampleCurrent; l3++){
           Ct_i[l3] = Ct[index_k + l3];
           alpha1_i[l3] = alpha1[P[index_k + l3] - 1];
           alpha2_i[l3] = alpha2[P[index_k + l3] - 1];
+          sigmay_i[l3] = sigma_y[P[index_k + l3] - 1];
         }
         
-        // Ct_i <- Ct[idx_sample_K == idx_current]
-        // alpha1_i <- alpha1[P[idx_sample_K == idx_current]]
-        // alpha2_i <- alpha2[P[idx_sample_K == idx_current]]
+        double mean_vtilde = Xwtbetawt[idx_current];
         
         double v_tilde_star = R::rnorm(v_tilde_current, sigmas_v[idx_current]);
       
         double logposterior_current = logf_v_tilde_cpp(v_tilde_current, Ct_i, 
-                                                       nu, sigma_nu,
+                                                       mean_vtilde, sigma_nu,
                                                        alpha1_i, alpha2_i, 
-                                                       sigma_y, p0, phi_0, 
+                                                       sigmay_i, p0, phi_0, 
                                                        phi_1,
                                                        lambda, sigma_lambda);
         
         double logposterior_star = logf_v_tilde_cpp(v_tilde_star, Ct_i, 
-                                                    nu, sigma_nu,
+                                                    mean_vtilde, sigma_nu,
                                                     alpha1_i, alpha2_i, 
-                                                    sigma_y, p0, phi_0, 
+                                                    sigmay_i, p0, phi_0, 
                                                     phi_1,
                                                     lambda, sigma_lambda);
         
@@ -1345,6 +1861,204 @@ arma::vec updateVtilde_cpp(arma::vec v_tilde,
   return v_tilde;
 
 }
+
+///////////
+//// V VTILDE
+///////////
+
+double logf_v_vtilde_ratio(double v_i, 
+                           double v_tilde_i,
+                           double v_i_star, 
+                           double v_tilde_i_star,
+                           arma::vec Ct_i, 
+                           double mean_v, 
+                           double sigma, 
+                           double mean_vtilde,
+                           double sigma_nu,
+                           arma::vec alpha1_i, 
+                           arma::vec alpha2_i,  
+                           arma::vec sigma_y, 
+                           double p0, 
+                           double phi_0, 
+                           double phi_1,
+                           double lambda, 
+                           double sigma_lambda){
+  
+  double logprior_ratio = 
+    R::dnorm(v_i_star, mean_v, sigma, 1) -
+    R::dnorm(v_i, mean_v, sigma, 1);
+  
+  if(v_i_star < 0){
+    
+    logprior_ratio +=
+      R::dnorm(v_tilde_i_star, mean_vtilde, sigma_nu, 1);
+    
+  }
+  
+  if(v_i < 0){
+    
+    logprior_ratio -=
+      R::dnorm(v_tilde_i, mean_vtilde, sigma_nu, 1); 
+    
+  }
+  
+  double loglik_ratio = loglik_vv_tilde_ratio(v_i, v_tilde_i, 
+                                              v_i_star, v_tilde_i_star,
+                                              Ct_i, 
+                                              alpha1_i, alpha2_i, 
+                                              sigma_y, p0, phi_0, phi_1,
+                                              lambda, sigma_lambda);
+  
+  return(logprior_ratio + loglik_ratio);
+  
+}
+
+// [[Rcpp::export]]
+double dtnorm(double x, 
+              double mu,
+              double sigma,
+              int pos){
+  
+  if(pos == 1){
+    return(R::dnorm(x, mu, sigma, 0) / (1 - R::pnorm(0, mu, sigma, 1, 0)));
+  } else {
+    return(R::dnorm(x, mu, sigma, 0) / R::pnorm(0, mu, sigma, 1, 0));
+  }
+  
+}
+
+double rtnorm(double mu, double sigma, int pos){
+  
+  if(pos == 1){
+    return(tnorm(mu, sigma, 0));
+  } else {
+    return(- tnorm(-mu, sigma, 0));
+  }
+  
+}
+
+// [[Rcpp::export]]
+List updateV_Vtilde_cpp(arma::vec v,
+                        arma::vec v_tilde,
+                        arma::vec Ct,
+                        arma::vec l,
+                        arma::vec M,
+                        double beta_w0,
+                        arma::mat X_w,
+                        arma::vec beta_w,
+                        double sigma,
+                        double nu,
+                        double sigma_nu,
+                        arma::mat X_wt,
+                        arma::vec beta_wt,
+                        arma::vec alpha1,
+                        arma::vec alpha2,
+                        arma::vec P,
+                        arma::vec numSampleV,
+                        arma::vec sigma_y,
+                        arma::vec sigmas_vvtilde,
+                        double p0,
+                        double phi_0,
+                        double phi_1,
+                        double lambda,
+                        double sigma_lambda){
+
+  arma::vec Xwbetaw = beta_w0 + X_w * beta_w;
+  arma::vec Xwtbetawt = nu + X_wt * beta_wt;
+
+  int n = l.size();
+
+  int index_m = 0;
+  int index_k = 0;
+  for(int i = 0; i < n; i++){
+
+    double l_i = l[i];
+
+    for (int m = 0; m < M[i]; m++) {
+
+      int idx_current = m + index_m;
+      int numSampleCurrent = numSampleV[idx_current];
+
+      double v_current = v[idx_current];
+      double v_tilde_current = v_tilde[idx_current];
+
+      if(v_current > 0 | v_tilde_current > 0){
+
+        arma::vec Ct_i = arma::zeros(numSampleCurrent);
+        arma::vec alpha1_i = arma::zeros(numSampleCurrent);
+        arma::vec alpha2_i = arma::zeros(numSampleCurrent);
+        arma::vec sigmay_i = arma::zeros(numSampleCurrent);
+        for(int l3 = 0; l3 < numSampleCurrent; l3++){
+          Ct_i[l3] = Ct[index_k + l3];
+          alpha1_i[l3] = alpha1[P[index_k + l3] - 1];
+          alpha2_i[l3] = alpha2[P[index_k + l3] - 1];
+          sigmay_i[l3] = sigma_y[P[index_k + l3] - 1];
+        }
+
+        double mean_v = l_i + Xwbetaw[idx_current];
+        double mean_vtilde = Xwtbetawt[idx_current];
+
+        double v_star;
+        double v_tilde_star;
+        double logproposal;
+        
+        if(v_current > 0){ // 1 to 2
+
+          v_star = rtnorm(mean_v, sigma, 0);
+          v_tilde_star = R::rnorm(v_current, sigmas_vvtilde[i]);
+          
+          logproposal =
+            log(dtnorm(v_current, v_tilde_star, sigmas_vvtilde[i], 1)) - 
+            (log(dtnorm(v_star, mean_v, sigma, 0)) + 
+            R::dnorm(v_tilde_star, v_current, sigmas_vvtilde[i], 1));
+          
+        } else { // 2 to 1
+          
+          v_star = rtnorm(v_tilde_current, sigmas_vvtilde[i], 1);
+          v_tilde_star = NA_REAL;
+          
+          logproposal = 
+            (log(dtnorm(v_current, mean_v, sigma, 0)) + 
+            R::dnorm(v_tilde_current, v_star, sigmas_vvtilde[i], 1)) - 
+            log(dtnorm(v_star, v_tilde_current, sigmas_vvtilde[i], 1));
+          
+
+        }
+
+        double logposterior_ratio = logf_v_vtilde_ratio(v_current, v_tilde_current, 
+                                                        v_star, v_tilde_star,
+                                                        Ct_i, mean_v, sigma,
+                                                        mean_vtilde, sigma_nu, 
+                                                        alpha1_i, alpha2_i, 
+                                                        sigma_y, p0, phi_0, phi_1,
+                                                        lambda, sigma_lambda);
+
+        double log_mh_ratio = logposterior_ratio  +
+          logproposal;
+
+        if(R::runif(0, 1) < exp(log_mh_ratio)){
+
+          v[idx_current] = v_star;
+          v_tilde[idx_current] = v_tilde_star;
+
+        }
+
+      }
+
+
+      index_k += numSampleCurrent;
+
+    }
+
+    index_m += M[i];
+
+  }
+
+  return List::create(_["v"] = v,
+                      _["v_tilde"] = v_tilde);
+
+}
+
 
 ///////////// 
 //// SIGMA Y
@@ -1437,7 +2151,9 @@ arma::vec updateSigmaY_cpp(arma::vec Ct,
 // [[Rcpp::export]]
 double loglik_phi_cpp(arma::vec phi_01,
                       arma::vec X_phi, 
-                      arma::vec delta_w){
+                      arma::vec delta_w,
+                      arma::vec mean_phi,
+                      arma::mat Sigma_phi){
   
   // Xphi <- X_phi %*% phi_01
   
@@ -1459,21 +2175,9 @@ double loglik_phi_cpp(arma::vec phi_01,
     
   }
   
-  // sum(sapply(1:nrow(X_phi), function(i){
-  //   
-  //   if(delta_w[i] == 1){
-  //     
-  //     return(- log(1 + exp(- Xphi[i])))
-  //     
-  //   } else {
-  //     
-  //     return(- Xphi[i] - log(1 + exp(- Xphi[i])))
-  //     
-  //   }
-  //   
-  // }))
+  double logprior = dmvnorm_cpp(phi_01, mean_phi, Sigma_phi, 1);
   
-  return loglik;
+  return logprior + loglik;
   
 }
 
