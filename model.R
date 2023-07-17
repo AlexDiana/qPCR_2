@@ -43,17 +43,18 @@ sigma_lambda <- 10
 
 # LOAD DATA ----
 
-{
+realData <- T
+
+if(realData) {
   load("~/qPCR_2/Data/sara.rda")
   samples <- unique(data_real$Sample)
   X_w <- as.matrix(X_w[match(X_w[,1], samples),-1])
   sites <- unique(data_real$Site)
   X_b <- as.matrix(X_b[match(X_b[,1], sites),-1])
-  X_wt <- X_w
+  X_wt <- matrix(0, nrow(X_w), 0)
 }
 
 # DATA CLEANING --------
-
 
 numCycles <- 45
 
@@ -72,15 +73,16 @@ idx_sample_K <- rep(1:sum(M), K)
 idx_site <- rep(1:n, M)
 
 Ct <- data_real$Ct
-
 P <- data_real$Plate
 
 # w_star <- data_standard$Qty
 # C_star <- data_standard$Ct
 # P_star <- data_standard$P
-w_star <- data_standard$Qty
-C_star <- data_standard$Ct
-P_star <- data_standard$P
+if(realData){
+  w_star <- data_standard$Quantity
+  C_star <- data_standard$C.
+  P_star <- data_standard$Plate
+}
 # Ct ordered by sample!!
 numSampleV <- as.numeric(table(idx_sample_K))
 
@@ -90,14 +92,13 @@ ncov_wt <- ncol(X_wt)
 
 n_P <- length(unique(data_real$Plate))
 
-
 # MCMC  -----------
 
 trueStartingValues <- F
 
 nchain <- 1
-niter <- 1000
-nburn <- 1000
+niter <- 5000
+nburn <- 5000
 nthin <- 1
 
 # output
@@ -461,11 +462,13 @@ for (chain in 1:nchain) {
     # UPDATE BETA Wt -------
     
     if(updBetaWt){
-      list_betawt <- updateBetaWt(v2, v1, X_wt, 
-                                  nu0, sigma_nu, sigma_beta, 
-                                  ncov_wt)
-      nu <- list_betawt$nu
-      beta_wt <- list_betawt$beta_wt
+      if(ncov_wt > 0){
+        list_betawt <- updateBetaWt(v2, v1, X_wt, 
+                                    nu0, sigma_nu, sigma_beta, 
+                                    ncov_wt)
+        nu <- list_betawt$nu
+        beta_wt <- list_betawt$beta_wt  
+      }
     }
     
     # UPDATE SIGMA NU -----------
@@ -590,122 +593,190 @@ for (chain in 1:nchain) {
 
 # OUTPUT TRUE ------
 
+setwd("~/qPCR_2/Output")
+
 library(coda)
 
-diagnosticsCheck <- function(params_output){
-  
-  dims <- dim(params_output)
-  
-  if(length(dims) > 2){
-    params_output <- apply(params_output, setdiff(1:length(dims), 1:2), c)
+# ess
+{
+  diagnosticsCheck <- function(params_output){
     
     dims <- dim(params_output)
-    dims_margin <- setdiff(1:length(dims), 1)
-    return(apply(params_output, dims_margin, function(x){
+    
+    if(length(dims) > 2){
+      params_output <- apply(params_output, setdiff(1:length(dims), 1:2), c)
       
-      if(any(!is.na(x))){
-        x <- x[!is.na(x)]
-        x_current <- mcmc(x)
-        return(as.numeric(effectiveSize(x_current)))
+      dims <- dim(params_output)
+      dims_margin <- setdiff(1:length(dims), 1)
+      return(apply(params_output, dims_margin, function(x){
         
-      } else {
-        return(NA)
-      }
-    }))
+        if(any(!is.na(x))){
+          x <- x[!is.na(x)]
+          x_current <- mcmc(x)
+          return(as.numeric(effectiveSize(x_current)))
+          
+        } else {
+          return(NA)
+        }
+      }))
+      
+    } else {
+      
+      # wrong
+      x_current <- mcmc(params_output[1,])
+      return(effectiveSize(x_current))
+      
+    }
     
-  } else {
-    
-    # wrong
-    x_current <- mcmc(params_output[1,])
-    return(effectiveSize(x_current))
     
   }
   
+  ess_l <- diagnosticsCheck(l_output)
+  print(min(ess_l))
+  ess_beta <- diagnosticsCheck(beta_output)
+  print(min(ess_beta))
+  ess_beta_w <- diagnosticsCheck(beta_w_output)
+  print(min(ess_beta_w[-1]))
+  ess_alpha <- diagnosticsCheck(alpha_output)
+  print(min(ess_alpha))
+  ess_v1 <- diagnosticsCheck(v1_output)
+  print(min(ess_v1))
+  ess_v2 <- diagnosticsCheck(v2_output)
+  print(min(ess_v2, na.rm = T))
+  ess_nu <- diagnosticsCheck(nu_output)
+  print(min(ess_nu))
+  ess_beta_wt <- diagnosticsCheck(beta_wt_output)
+  print(min(ess_beta_wt))
+  ess_tau <-  diagnosticsCheck(tau_output)
+  print(min(ess_tau))
+  ess_phi <- diagnosticsCheck(phi_output)
+  print(min(ess_phi))
+  ess_p0 <- diagnosticsCheck(p0_output)
+  print(min(ess_p0))
+}
+
+# traceplot
+{
+  qplot(1:niter, beta_w_output[,,3])
+  qplot(1:niter, beta_output[,,2])
+  qplot(1:niter, beta_w_output[,,4])
+  qplot(1:niter, p0_output[1,])
+  qplot(1:niter, alpha_output[1,,10,2])
+  qplot(1:niter, v_output[1,,1])
+  qplot(1:niter, tau_output[1,])
+  qplot(1:niter, sigma_output[1,])
+}
+
+# covariates
+{
+  covariatePlot <- function(beta_output, covNames){
+    
+    beta_CI <- apply(beta_output[,,-1,drop = F], 3, function(x){
+      quantile(x, probs = c(.025,.5,.975))
+    })
+    beta_mean <- beta_CI[2,]
+    colnames(beta_CI) <- covNames
+    
+    idxCovs <- order(beta_mean)
+    
+    # covnames_order <- covnmaes[idxCovs]
+    # 
+    # OTUnames <- as.character(1:length(OTUnames))
+    # factorSub <- factor(idxSpecies, levels = idxSpecies)
+    # namesSpecies <- OTUnames
+    
+    data_plot <- data.frame(Covariates = covNames,
+                            y = beta_CI[2,],
+                            ymin = beta_CI[1,],
+                            ymax = beta_CI[3,])
+    
+    (covplot_all <- 
+        ggplot2::ggplot(data = data_plot, ggplot2::aes(x = Covariates,
+                                                       y = y,
+                                                       ymin = ymin,
+                                                       ymax = ymax)) + 
+        geom_errorbar() + 
+        ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 20),
+                       axis.title = ggplot2::element_text(size = 20, face = "bold"),
+                       axis.text = ggplot2::element_text(size = 13, face = "bold", angle = 0),
+                       panel.grid.major = ggplot2::element_line(colour="grey", size=0.15),
+                       legend.title = element_text(size=14), #change legend title font size
+                       legend.text = element_text(size=10),
+                       panel.background = ggplot2::element_rect(fill = "white", color = "black")) +
+        ggplot2::geom_hline(aes(yintercept = 0), color = "red") + 
+        ylab("Value") + 
+        ggplot2::scale_y_continuous(breaks = (-10):10) + ggplot2::coord_flip())
+    
+    
+    
+  }
+  
+  cov_b_plot <- covariatePlot(beta_output, colnames(X_b))
+  
+  ggsave("Cov_concentration_plot.jpeg", cov_b_plot)
+  
+  cov_w_plot <- covariatePlot(beta_w_output, colnames(X_w))
+  
+  ggsave("Cov_detection_plot.jpeg", cov_w_plot)
   
 }
 
-ess_l <- diagnosticsCheck(l_output)
-print(min(ess_l))
-ess_beta <- diagnosticsCheck(beta_output)
-print(min(ess_beta))
-ess_beta_w <- diagnosticsCheck(beta_w_output)
-print(min(ess_beta_w[-1]))
-ess_alpha <- diagnosticsCheck(alpha_output)
-print(min(ess_alpha))
-ess_v1 <- diagnosticsCheck(v1_output)
-print(min(ess_v1))
-ess_v2 <- diagnosticsCheck(v2_output)
-print(min(ess_v2, na.rm = T))
-ess_nu <- diagnosticsCheck(nu_output)
-print(min(ess_nu))
-ess_beta_wt <- diagnosticsCheck(beta_wt_output)
-print(min(ess_beta_wt))
-ess_tau <-  diagnosticsCheck(tau_output)
-print(min(ess_tau))
-ess_phi <- diagnosticsCheck(phi_output)
-print(min(ess_phi))
-ess_p0 <- diagnosticsCheck(p0_output)
-print(min(ess_p0))
-
-qplot(1:niter, beta_w_output[,,3])
-qplot(1:niter, beta_output[,,2])
-qplot(1:niter, beta_w_output[,,4])
-qplot(1:niter, p0_output[1,])
-
-qplot(1:niter, alpha_output[1,,10,2])
-
-qplot(1:niter, v_output[1,,1])
-
-qplot(1:niter, tau_output[1,])
-qplot(1:niter, sigma_output[1,])
-
-covariatePlot <- function(beta_output, covNames){
+# site plot
+{
+  sitetype <- ifelse(X_b[,"typelake"] == 1, "lake",
+                     ifelse(X_b[,"typereservoir"] == 1, "reservoir",
+                            ifelse(X_b[,"typeriver"] == 1, "river","pond")))
   
-  beta_CI <- apply(beta_output[,,-1,drop = F], 3, function(x){
-    quantile(x, probs = c(.025,.5,.975))
-  })
-  beta_mean <- beta_CI[2,]
-  colnames(beta_CI) <- covNames
+  sitesPlot <- function(l_output, sites, sitetype){
+    
+    l_CI <- apply(l_output, 3, function(x){
+      quantile(x, probs = c(.025,.5,.975))
+    })
+    l_mean <- l_CI[2,]
+    colnames(l_CI) <- sites
+    
+    idxCovs <- order(l_mean)
+    
+    # covnames_order <- covnmaes[idxCovs]
+    # 
+    # OTUnames <- as.character(1:length(OTUnames))
+    # factorSub <- factor(idxSpecies, levels = idxSpecies)
+    # namesSpecies <- OTUnames
+    
+    data_plot <- data.frame(Sites = sites,
+                            Type = sitetype,
+                            y = l_CI[2,],
+                            ymin = l_CI[1,],
+                            ymax = l_CI[3,])
+    
+    (sitesplot_all <- 
+        ggplot2::ggplot(data = data_plot, ggplot2::aes(x = Sites,
+                                                       y = y,
+                                                       ymin = ymin,
+                                                       ymax = ymax)) + 
+        geom_errorbar() + facet_grid(rows = vars(Type), scale = "free") + 
+        ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 20),
+                       axis.title = ggplot2::element_text(size = 20, face = "bold"),
+                       axis.text = ggplot2::element_text(size = 13, face = "bold", angle = 0),
+                       panel.grid.major = ggplot2::element_line(colour="grey", size=0.15),
+                       legend.title = element_text(size=14), #change legend title font size
+                       legend.text = element_text(size=10),
+                       panel.background = ggplot2::element_rect(fill = "white", color = "black")) +
+        # ggplot2::geom_hline(aes(yintercept = 0), color = "red") + 
+        ylab("Site concentration") + ggplot2::coord_flip()
+      # ggplot2::scale_y_continuous(breaks = (-10):10) + ggplot2::coord_flip()
+    )
+    
+    
+  }
   
-  idxCovs <- order(beta_mean)
+  sitesplot <- sitesPlot(l_output, sites, sitetype)
   
-  # covnames_order <- covnmaes[idxCovs]
-  # 
-  # OTUnames <- as.character(1:length(OTUnames))
-  # factorSub <- factor(idxSpecies, levels = idxSpecies)
-  # namesSpecies <- OTUnames
-  
-  data_plot <- data.frame(Covariates = covNames,
-                          y = beta_CI[2,],
-                          ymin = beta_CI[1,],
-                          ymax = beta_CI[3,])
-  
-  (covplot_all <- 
-      ggplot2::ggplot(data = data_plot, ggplot2::aes(x = Covariates,
-                                                     y = y,
-                                                     ymin = ymin,
-                                                     ymax = ymax)) + 
-      geom_errorbar() + 
-      ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5, size = 20),
-                     axis.title = ggplot2::element_text(size = 20, face = "bold"),
-                     axis.text = ggplot2::element_text(size = 13, face = "bold", angle = 0),
-                     panel.grid.major = ggplot2::element_line(colour="grey", size=0.15),
-                     legend.title = element_text(size=14), #change legend title font size
-                     legend.text = element_text(size=10),
-                     panel.background = ggplot2::element_rect(fill = "white", color = "black")) +
-      ggplot2::geom_hline(aes(yintercept = 0), color = "red") + 
-      ylab("Value") + 
-      ggplot2::scale_y_continuous(breaks = (-10):10) + ggplot2::coord_flip())
-  
-  
-  
+  ggsave("Sites_concentration_plot.jpeg", sitesplot)
 }
 
 
-covariatePlot(beta_output, colnames(X_b))
-covariatePlot(beta_w_output, colnames(X_w))
-
-# diagnostics plot
+# diagnostics plot ---------
 
 qplot(1:niter, l_output[,,1])
 
@@ -814,3 +885,6 @@ qplot(1:niter, phi_output_chain[,2], geom = "line") +
 #
 
 tracePlotParameters(beta_w_output, idx = c(2))
+tracePlotParameters(beta_w_output, idx = c(2))
+
+# 
